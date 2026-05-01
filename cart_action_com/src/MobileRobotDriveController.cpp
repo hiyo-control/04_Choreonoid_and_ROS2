@@ -12,7 +12,7 @@
 class MobileRobotDriveController : public cnoid::SimpleController
 {
 public:
-    using CartAction = cart_action_interface::action::CartActionInterface;
+    using CartAction           = cart_action_interface::action::CartActionInterface;
     using GoalHandleCartAction = rclcpp_action::ServerGoalHandle<CartAction>;
 
     virtual bool configure(cnoid::SimpleControllerConfig* config) override;
@@ -43,7 +43,8 @@ private:
         rclcpp::Rate loop_rate(1);
         const auto goal = goal_handle->get_goal();
         auto feedback   = std::make_shared<CartAction::Feedback>();
-        auto & sequence = feedback->partial_sequence;
+        //auto & sequence = feedback->partial_sequence;
+        auto & wheel_torque_vector = feedback->wheel_torque;
         auto result     = std::make_shared<CartAction::Result>();
 
         for (int i = 1; (i < goal->order) && rclcpp::ok(); ++i) 
@@ -51,15 +52,22 @@ private:
             // Confirm cancel request
             if (goal_handle->is_canceling()) 
             {
-                result->sequence = sequence;
+                //result->sequence = sequence;
+                result->wheel_torque_vector = wheel_torque_vector;
                 goal_handle->canceled(result);
                 RCLCPP_INFO(node->get_logger(), "Goal canceled");
                 return;
             }
-            // get & send wheel now data
+            // Send Feedback to Action client
+            /*
             sequence.push_back( wheels[0]->u() );
             goal_handle->publish_feedback(feedback);
             RCLCPP_INFO(node->get_logger(), "Published wheel now data: %f", feedback->partial_sequence.back());
+            */
+
+            wheel_torque_vector.push_back( wheels[0]->u() );
+            goal_handle->publish_feedback(feedback);
+            RCLCPP_INFO(node->get_logger(), "Published wheel now data: %f", feedback->wheel_torque.back());
 
             loop_rate.sleep();
         }
@@ -67,10 +75,13 @@ private:
         // send result data
         if (rclcpp::ok()) 
         {
+            // Stop cart
             command.linear.x  = 0.0;
             command.angular.z = 0.0;
 
-            result->sequence = sequence;
+            // Send Result to Action client
+            //result->sequence = sequence;
+            result->wheel_torque_vector = wheel_torque_vector;
             goal_handle->succeed(result);
             RCLCPP_INFO(node->get_logger(), "Goal succeeded");
         }
@@ -85,43 +96,46 @@ bool MobileRobotDriveController::configure(cnoid::SimpleControllerConfig* config
 
     using namespace std::placeholders;
 
-    auto handle_goal = [this](
-        const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const CartAction::Goal> goal)
+    // function that is executed when a "Goal" is received
+    auto handle_goal = [this](const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const CartAction::Goal> goal)
+    {
+        (void)uuid;
+        RCLCPP_INFO(node->get_logger(), "Received goal request with order %d", goal->order);
+        if (goal->order > 46)
         {
-            (void)uuid;
-            RCLCPP_INFO(node->get_logger(), "Received goal request with order %d", goal->order);
-            if (goal->order > 46)
-            {
-                return rclcpp_action::GoalResponse::REJECT;
-            }
+            return rclcpp_action::GoalResponse::REJECT;
+        }
 
-            command.linear.x = 0.5;
-            command.angular.z = 1.0;
-            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-        };
-    
+        command.linear.x = 0.5;
+        command.angular.z = 1.0;
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    };
+
+    // function that is executed when a "Cancel" is received
     auto handle_cancel = [this](const std::shared_ptr<GoalHandleCartAction> goal_handle)
-        {
-            RCLCPP_INFO(node->get_logger(), "Received request to cancel goal");
-            (void)goal_handle;
-            return rclcpp_action::CancelResponse::ACCEPT;
-        };
+    {
+        RCLCPP_INFO(node->get_logger(), "Received request to cancel goal");
+        (void)goal_handle;
+        return rclcpp_action::CancelResponse::ACCEPT;
+    };
     
+    // function that is executed when a "Goal" is accepted
     auto handle_accepted = [this](const std::shared_ptr<GoalHandleCartAction> goal_handle)
+    {
+        auto execute_in_thread = [this, goal_handle]()
         {
-            auto execute_in_thread = [this, goal_handle]()
-            {
-                return this->execute(goal_handle);
-            };
-            std::thread{execute_in_thread}.detach();
+            return this->execute(goal_handle);
         };
+        std::thread{execute_in_thread}.detach();
+    };
     
     this->action_server_ = rclcpp_action::create_server<CartAction>(
-        node,
-        "CartAction",
-        handle_goal,
-        handle_cancel,
-        handle_accepted);
+        node            , // node pointer
+        "CartAction"    , // name of action
+        handle_goal     , // function that is executed when a "Goal" is received
+        handle_cancel   , // function that is executed when a "Cancel" is received
+        handle_accepted   // function that is executed when a "Goal" is accepted
+        );
 
     executor = std::make_unique<rclcpp::executors::StaticSingleThreadedExecutor>();
     executor->add_node(node);

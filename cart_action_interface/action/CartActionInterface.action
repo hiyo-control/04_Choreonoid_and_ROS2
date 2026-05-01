@@ -2,7 +2,9 @@
 int32 order
 ---
 # Result
-float32[] sequence
+# float32[] sequence
+float32[] wheel_torque_vector
 ---
 # Feedback
-float32[] partial_sequence
+# float32[] partial_sequence
+float32[] wheel_torque
